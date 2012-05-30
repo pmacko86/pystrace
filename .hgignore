@@ -1,0 +1,9 @@
+syntax: glob
+*~
+cscope.out
+.directory
+*.lastbuildstate
+*.bak
+*.kate-swp
+.DS_Store
+*.pyc
