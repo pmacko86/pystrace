@@ -55,8 +55,7 @@ def escape(s, quote='"'):
 	if type(s) == int: return str(s)
 	if type(s) == float: return str(s)
 	for c in str(s):
-		if c in [quote, '"']:
-			r += '\\'
+		if c == quote: r += quote
 		r += c
 	return quote + r + quote
 
