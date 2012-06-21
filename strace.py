@@ -39,49 +39,64 @@
 import re
 import sys
 
+import strace_utils
+
 
 #
 # Initialize regular expressions
 #
 
 global re_get_pid
-re_get_pid = re.compile(r"(\d+) .*")
+re_get_pid \
+		= re.compile(r"(\d+) .*")
 
 global re_extract
-re_extract = re.compile(r"\s*(\d+\.\d+) (\w+)(\(.*) <(.+)>$")
+re_extract \
+		= re.compile(r"\s*(\d+\.\d+) (\w+)(\(.*) <(.+)>$")
 
 global re_extract_no_elapsed
-re_extract_no_elapsed = re.compile(r"\s*(\d+\.\d+) (\w+)(\(.*)$")
+re_extract_no_elapsed \
+		= re.compile(r"\s*(\d+\.\d+) (\w+)(\(.*)$")
 
 global re_extract_unfinished
-re_extract_unfinished = re.compile(r"\s*(\d+\.\d+ .*) <unfinished \.\.\.>$")
+re_extract_unfinished \
+		= re.compile(r"\s*(\d+\.\d+ .*) <unfinished \.\.\.>$")
 
 global re_extract_resumed
-re_extract_resumed = re.compile(r"\s*(\d+\.\d+) <\.\.\. [\a-zA-Z\d]+ resumed>(.*)$")
+re_extract_resumed \
+		= re.compile(r"\s*(\d+\.\d+) <\.\.\. [\a-zA-Z\d]+ resumed>(.*)$")
 
 global re_extract_signal
-re_extract_signal = re.compile(r"\s*(\d+\.\d+) --- (\w+) \(([\w ]+)\) @ (\d)+ \((\d+)\) ---$")
+re_extract_signal \
+		= re.compile(r"\s*(\d+\.\d+) --- (\w+) \(([\w ]+)\) @ (\d)+ \((\d+)\) ---$")
 
 global re_extract_arguments_and_return_value_none
-re_extract_arguments_and_return_value_none = re.compile(r"\((.*)\)[ \t]*= (\?)$")
+re_extract_arguments_and_return_value_none \
+		= re.compile(r"\((.*)\)[ \t]*= (\?)$")
 
 global re_extract_arguments_and_return_value_ok
-re_extract_arguments_and_return_value_ok = re.compile(r"\((.*)\)[ \t]*= (-?\d+)$")
+re_extract_arguments_and_return_value_ok \
+		= re.compile(r"\((.*)\)[ \t]*= (-?\d+)$")
 
 global re_extract_arguments_and_return_value_ok_hex
-re_extract_arguments_and_return_value_ok_hex = re.compile(r"\((.*)\)[ \t]*= (-?0[xX][a-fA-F\d]+)$")
+re_extract_arguments_and_return_value_ok_hex \
+		= re.compile(r"\((.*)\)[ \t]*= (-?0[xX][a-fA-F\d]+)$")
 
 global re_extract_arguments_and_return_value_error
-re_extract_arguments_and_return_value_error = re.compile(r"\((.*)\)[ \t]*= (-?\d+) (\w+) \([\w ]+\)$")
+re_extract_arguments_and_return_value_error \
+		= re.compile(r"\((.*)\)[ \t]*= (-?\d+) (\w+) \([\w ]+\)$")
 
 global re_extract_arguments_and_return_value_error_unknown
-re_extract_arguments_and_return_value_error_unknown = re.compile(r"\((.*)\)[ \t]*= (\?) (\w+) \([\w ]+\)$")
+re_extract_arguments_and_return_value_error_unknown \
+		= re.compile(r"\((.*)\)[ \t]*= (\?) (\w+) \([\w ]+\)$")
 
 global re_extract_arguments_and_return_value_ext
-re_extract_arguments_and_return_value_ext = re.compile(r"\((.*)\)[ \t]*= (-?\d+) \(([^()]+)\)$")
+re_extract_arguments_and_return_value_ext \
+		= re.compile(r"\((.*)\)[ \t]*= (-?\d+) \(([^()]+)\)$")
 
 global re_extract_arguments_and_return_value_ext_hex
-re_extract_arguments_and_return_value_ext_hex = re.compile(r"\((.*)\)[ \t]*= (-?0[xX][a-fA-F\d]+) \(([^()]+)\)$")
+re_extract_arguments_and_return_value_ext_hex \
+		= re.compile(r"\((.*)\)[ \t]*= (-?0[xX][a-fA-F\d]+) \(([^()]+)\)$")
 
 
 #
@@ -101,6 +116,20 @@ class StraceEntry:
 		self.syscall_name = syscall_name
 		self.syscall_arguments = syscall_arguments
 		self.return_value = return_value
+		self.category = self.__get_category()
+
+	
+	def __get_category(self):
+		# Should mmap() be in this category?
+		if self.syscall_name in ["read", "write", "open", "close", "lseek",
+				"llseek", "__llseek", "stat", "stat64", "fstat", "chmod",
+				"access", "rename", "mkdir", "getdents", "fcntl", "unlink",
+				"fseek", "rewind", "ftell", "fgetpos", "fsetpos", "fclose",
+				"fsync", "creat", "readdir", "opendir", "rewinddir", "scandir",
+				"seekdir", "telldir", "flock", "lockf", "mmap"]:
+			return "IO"
+		else:
+			return None
 
 
 #
@@ -396,11 +425,12 @@ class StraceTracedProcess:
 	A process in a strace output
 	'''
 	
-	def __init__(self, pid):
+	def __init__(self, pid, name):
 		'''
 		Initialize the traced process object
 		'''
 		self.pid = pid
+		self.name = name
 		self.entries = []
 
 
@@ -422,15 +452,55 @@ class StraceFile:
 		self.have_pids = False
 		self.content = []
 		self.processes = dict()
+
+		self.start_time = None
+		self.last_timestamp = None
+		self.finish_time = None
+		self.elapsed_time = None
+
+
+		# Process the file
 		
 		strace_stream = StraceInputStream(input)
 		
 		for entry in strace_stream:
+			
 			self.have_pids = strace_stream.have_pids
 			if entry.pid not in self.processes.keys():
-				self.processes[entry.pid] = StraceTracedProcess(entry.pid)
+				self.processes[entry.pid] = StraceTracedProcess(entry.pid, None)
+			if self.processes[entry.pid].name is None:
+				if entry.syscall_name == "execve":
+					self.processes[entry.pid].name = \
+							strace_utils.array_safe_get(entry.syscall_arguments,0)
+
 			self.processes[entry.pid].entries.append(entry)
 			self.content.append(entry)
+
+
+			# Analyze the timestamps
+
+			if self.start_time is None:
+				self.start_time = entry.timestamp
+			if self.last_timestamp is None:
+				self.last_timestamp = entry.timestamp
+			if self.start_time > entry.timestamp:
+				self.start_time = entry.timestamp
+			if self.last_timestamp < entry.timestamp:
+				self.last_timestamp = entry.timestamp
+			
+			entry_finish_time = entry.timestamp
+			if entry.elapsed_time is not None:
+				entry_finish_time += entry.elapsed_time
+			if self.finish_time is None:
+				self.finish_time = entry_finish_time
+			if self.finish_time < entry_finish_time:
+				self.finish_time = entry_finish_time
 		
+		if self.start_time is not None:
+			self.elapsed_time = self.finish_time - self.start_time
+
+
+		# Close
+
 		if type(input) == file:
 			strace_stream.close()

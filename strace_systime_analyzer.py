@@ -37,24 +37,26 @@
 #
 
 import getopt
+import math
 import os.path
 import sys
 
-from strace import *
-from strace_utils import *
+import strace
+import strace_utils
 
 
 #
-# Convert to a .csv
+# Analyze the systime
 #
-def convert2csv(input_file, output_file=None, separator=',', quote='"'):
+def analyze_systime(input_file, output_file=None, bin_size=0.1, \
+		separator=',', quote='"'):
 	'''
-	Convert to a .csv
+	Analyze the systime
 	
 	Arguments:
 	  input_file  - the input file, or None for standard input
 	  output_file - the output file, or None for standard output
-	  separator   - the separator
+	  bin_size    - the size of a bin
 	'''
 
 	# Open the files
@@ -70,49 +72,61 @@ def convert2csv(input_file, output_file=None, separator=',', quote='"'):
 		f_out = sys.stdout
 	
 	
+	# Read in the file
+	
+	strace_file = strace.StraceFile(f_in)
+	if len(strace_file.processes) == 0:
+		if f_out is not sys.stdout: f_out.close()
+		return
+
+
 	# Process the file
-	
-	strace_stream = StraceInputStream(f_in)
-	first = True
-	
-	for entry in strace_stream:
-		
-		if first:
-			first = False
-			headers = ["TIMESTAMP", "SYSCALL", "CATEGORY", "SPLIT", \
-					   "ARGC", "ARG1", "ARG2", "ARG3", "ARG4", "ARG5", "ARG6",
-					   "RESULT", "ELAPSED"]
-			if strace_stream.have_pids: headers.insert(0, "PID")
-			csv_write_row_array(f_out, headers, separator, "")
-		
-		
-		# Print
-		
-		if entry.was_unfinished:
-			i_was_unfinished = 1
+
+	num_bins = int(math.ceil((strace_file.elapsed_time) / bin_size))
+	bins_per_process = dict()
+
+	for e in strace_file.content:
+		if e.pid not in bins_per_process.keys():
+			bins = [0] * num_bins
+			bins_per_process[e.pid] = bins
 		else:
-			i_was_unfinished = 0
-		
-		data = [entry.timestamp, entry.syscall_name, entry.category,
-			   i_was_unfinished,
-			   len(entry.syscall_arguments),
-			   array_safe_get(entry.syscall_arguments, 0),
-			   array_safe_get(entry.syscall_arguments, 1),
-			   array_safe_get(entry.syscall_arguments, 2),
-			   array_safe_get(entry.syscall_arguments, 3),
-			   array_safe_get(entry.syscall_arguments, 4),
-			   array_safe_get(entry.syscall_arguments, 5),
-			   entry.return_value,
-			   entry.elapsed_time]
-		if strace_stream.have_pids: data.insert(0, entry.pid)
-		csv_write_row_array(f_out, data, separator, quote)
+			bins = bins_per_process[e.pid]
+
+		t_start = e.timestamp - strace_file.start_time
+		t_end = t_start
+		if e.elapsed_time is not None: t_end += e.elapsed_time
+		bin_start = int(math.floor(t_start / bin_size))
+		bin_end = int(math.ceil(t_end / bin_size))  # exclusive
+
+		for i in xrange(bin_start, bin_end):
+			bin_t_start = i * bin_size
+			bin_t_end   = bin_t_start + bin_size
+			b = bin_size
+			if t_start > bin_t_start: b -= t_start - bin_t_start
+			if t_end   < bin_t_end  : b -= bin_t_end - t_end
+			bins[i] += b
+	
+
+	# Print the result
+
+	pids = strace_file.processes.keys()
+	
+	header = ["TIME"]
+	for p in pids:
+		header.append("[%d] %s" % (p, strace_file.processes[p].name))
+	strace_utils.csv_write_row_array(f_out, header)
+
+	for i in xrange(0, num_bins):
+		data = [i * bin_size]
+		for p in pids:
+			data.append(bins_per_process[p][i] / bin_size)
+		strace_utils.csv_write_row_array(f_out, data)
 
 
 	# Close the files
 
 	if f_out is not sys.stdout:
 		f_out.close()
-	strace_stream.close()
 
 
 #
@@ -160,10 +174,10 @@ def main(argv):
 		sys.exit(1)
 	
 	
-	# Convert to .csv
+	# Process the file
 
 	try:
-		convert2csv(input_file, output_file)
+		analyze_systime(input_file, output_file)
 	except IOError as e:
 		sys.stderr.write("%s: %s\n" % (os.path.basename(sys.argv[0]), e))
 		sys.exit(1)
